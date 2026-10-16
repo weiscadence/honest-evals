@@ -1,27 +1,51 @@
 """Append-only, hash-chained claim ledger in JSONL.
 
-Every record carries ``prev`` (hash of the previous record, or ``GENESIS``)
-and ``hash`` (sha256 over the record's canonical material). A separate
-head file records the last hash and sequence number, so ``verify_chain``
-can detect truncation as well as edits: a chain that was shortened still
-has valid internal links, but it no longer ends at the recorded head.
+Every record carries ``prev`` (hash of the previous record, or the genesis
+commitment ``GENESIS:<chain_id>``) and ``hash`` (sha256 over the record's
+canonical material). A separate head file records the last hash, sequence
+number and chain id, so ``verify_chain`` can detect truncation as well as
+edits: a chain that was shortened still has valid internal links, but it no
+longer ends at the recorded head.
+
+The chain id gives a ledger an identity. Without one, any freshly written
+ledger verifies, so a substitute chain is indistinguishable from the original.
+With one, the id is bound into the first hash (and so into every later hash),
+and a verifier who knows the id (from the head file published as an
+``Anchor``, or out of band) rejects any chain that did not start from it.
 
 The point of logging a claim *at the moment it is made*, together with the
-check that would settle it and the value observed right then, is that the
-denominator cannot be chosen after the verdicts are known.
+check that would settle it and the value observed right then, is that
+curating the denominator after the verdicts are known becomes detectable
+against an externally anchored record.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import secrets
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Union
 
 GENESIS = "GENESIS"
+GENESIS_SEP = ":"
 HASH_LEN = 64
+
+
+def genesis_prev(chain_id: str) -> str:
+    """The ``prev`` value of row 1: the chain's identity, hashed into every row."""
+    if not chain_id or GENESIS_SEP in chain_id or any(c.isspace() for c in chain_id):
+        raise ChainError(f"chain id must be non-empty with no whitespace or {GENESIS_SEP!r}, got {chain_id!r}")
+    return f"{GENESIS}{GENESIS_SEP}{chain_id}"
+
+
+def chain_id_of(prev: str) -> Optional[str]:
+    """Inverse of ``genesis_prev``; ``None`` if ``prev`` is not a genesis commitment."""
+    if prev.startswith(GENESIS + GENESIS_SEP) and len(prev) > len(GENESIS) + 1:
+        return prev[len(GENESIS) + 1:]
+    return None
 CheckSpec = Union[str, Callable[[], Any]]
 
 __all__ = [
@@ -31,6 +55,8 @@ __all__ = [
     "ChainReport",
     "Ledger",
     "canonical_material",
+    "chain_id_of",
+    "genesis_prev",
     "hash_record",
     "verify_chain",
 ]
@@ -136,6 +162,7 @@ class Anchor:
     seq: int
     hash: str
     commit: str = ""
+    chain_id: str = ""  # when set, the chain must have started from this id
 
     @classmethod
     def from_git(cls, repo: Union[str, os.PathLike[str]], commit: str, head_relpath: str) -> "Anchor":
@@ -152,7 +179,7 @@ class Anchor:
         if proc.returncode != 0:
             raise ChainError(f"cannot read {head_relpath} at {commit}: {proc.stderr.strip()}")
         head = json.loads(proc.stdout)
-        return cls(seq=int(head["seq"]), hash=str(head["hash"]), commit=commit)
+        return cls(seq=int(head["seq"]), hash=str(head["hash"]), commit=commit, chain_id=str(head.get("chain_id") or ""))
 
 
 def _now_iso() -> str:
@@ -170,13 +197,38 @@ def _check_name(check: CheckSpec) -> str:
 class Ledger:
     """A JSONL ledger with a sidecar head file (``<path>.head``).
 
-    Records are only ever appended. The head file stores ``{"seq": n, "hash": h}``
-    for the last record written; ``verify_chain`` requires the file to end there.
+    Records are only ever appended. The head file stores
+    ``{"seq": n, "hash": h, "chain_id": id}`` for the last record written;
+    ``verify_chain`` requires the file to end there.
+
+    ``chain_id`` names the chain. Pass one to create or open a specific chain
+    (opening a file that started from a different id is refused); omit it to
+    open an existing ledger under its recorded id, or to create a new ledger
+    under a fresh random id (read it back from ``.chain_id``).
     """
 
-    def __init__(self, path: Union[str, os.PathLike[str]]):
+    def __init__(self, path: Union[str, os.PathLike[str]], chain_id: Optional[str] = None):
         self.path = Path(path)
         self.head_path = Path(str(self.path) + ".head")
+        self._chain_id = chain_id
+        if chain_id is not None:
+            genesis_prev(chain_id)  # validate eagerly
+
+    @property
+    def chain_id(self) -> Optional[str]:
+        """The chain id: as given, else as recorded in row 1 (or the head), else ``None``."""
+        if self._chain_id is not None:
+            return self._chain_id
+        try:
+            rows = self.records()
+        except ChainError:
+            rows = []
+        if rows:
+            return chain_id_of(rows[0].prev)
+        head = self.read_head()
+        if head and head.get("chain_id"):
+            return str(head["chain_id"])
+        return None
 
     # ---- reading ---------------------------------------------------------
     def records(self) -> list[Claim]:
@@ -222,7 +274,17 @@ class Ledger:
         if not report.ok and report.rows > 0:
             raise ChainError(f"refusing to append to a broken chain: {report.reason}")
         rows = self.records()
-        prev = rows[-1].hash if rows else GENESIS
+        if rows:
+            recorded = chain_id_of(rows[0].prev)
+            if self._chain_id is not None and recorded != self._chain_id:
+                raise ChainError(f"chain id mismatch: ledger started from {recorded!r}, opened as {self._chain_id!r}")
+            self._chain_id = recorded
+            prev = rows[-1].hash
+        else:
+            if self._chain_id is None:
+                head = self.read_head()
+                self._chain_id = str(head["chain_id"]) if head and head.get("chain_id") else secrets.token_hex(16)
+            prev = genesis_prev(self._chain_id)
         new_ts = ts or _now_iso()
         new_dt = _parse_ts(new_ts)
         if rows and new_dt < _parse_ts(rows[-1].ts):
@@ -246,7 +308,7 @@ class Ledger:
 
     def _write_head(self, rec: Claim) -> None:
         tmp = self.head_path.with_suffix(self.head_path.suffix + ".tmp")
-        tmp.write_text(json.dumps({"seq": rec.seq, "hash": rec.hash}), encoding="utf-8")
+        tmp.write_text(json.dumps({"seq": rec.seq, "hash": rec.hash, "chain_id": self.chain_id}), encoding="utf-8")
         os.replace(tmp, self.head_path)
 
 
@@ -255,15 +317,18 @@ def verify_chain(
     *,
     raise_on_fail: bool = False,
     anchor: Optional[Anchor] = None,
+    chain_id: Optional[str] = None,
 ) -> ChainReport:
     """Verify prev-links, recomputed hashes, and that the file ends at the head.
 
     Detects: edited fields (hash mismatch), re-ordered or spliced rows (prev
     mismatch, seq gap), truncation (last hash != recorded head), and a head
-    file pointing past the data (same check), timestamps that go backwards, and,
-    when an external ``anchor`` is given, a chain rewritten wholesale after the
-    anchor was published. Without an anchor a full consistent rewrite (rows and
-    head together) cannot be detected. An empty ledger with no head is OK.
+    file pointing past the data (same check), timestamps that go backwards, a
+    chain that did not start from the expected ``chain_id`` (given here, on the
+    ``Ledger``, or on the ``anchor``), and, when an external ``anchor`` is given,
+    a chain rewritten wholesale after the anchor was published. Without an
+    anchor a full consistent rewrite (rows and head together) cannot be
+    detected. An empty ledger with no head is OK.
     """
     led = ledger if isinstance(ledger, Ledger) else Ledger(ledger)
     try:
@@ -281,7 +346,22 @@ def verify_chain(
             raise ChainError(reason)
         return rep
 
-    prev = GENESIS
+    # Every stated expectation of the chain id must agree; the first row must match it.
+    expected_ids = {x for x in (chain_id, led._chain_id, anchor.chain_id if anchor else None) if x}
+    if len(expected_ids) > 1:
+        return fail(f"conflicting chain id expectations: {sorted(expected_ids)}", None)
+    expected_id = next(iter(expected_ids), None)
+    if rows:
+        found_id = chain_id_of(rows[0].prev)
+        if found_id is None:
+            return fail("no chain id: row 1 does not start from a GENESIS:<chain_id> commitment", 1)
+        if expected_id is not None and found_id != expected_id:
+            return fail(f"chain id mismatch: expected {expected_id!r}, chain started from {found_id!r}", 1)
+        if head is not None and head.get("chain_id") not in (None, found_id):
+            return fail(f"chain id mismatch: head records {head.get('chain_id')!r}, chain started from {found_id!r}", 1)
+        prev = rows[0].prev
+    else:
+        prev = genesis_prev(expected_id) if expected_id else ""
     expected_seq = 1
     last_dt: Optional[datetime] = None
     for r in rows:

@@ -6,7 +6,8 @@ Classes (``RerunClass``):
 * ``drifted``          - the value differs because the data legitimately
                          changed since claim time (append-only logs, live
                          boards). Never an error at publish. Requires an
-                         adjudication or a ``snapshot`` flag on the record.
+                         adjudication, or a ``snapshot`` flag on the record
+                         together with a non-empty ``snapshot_reason``.
 * ``wrong_at_publish`` - the claim disagreed with its own check *when it was
                          made*. Established either by an explicit adjudication
                          or by record-consistency: the record carries the value
@@ -18,9 +19,14 @@ Classes (``RerunClass``):
                          denominator, never as true.
 
 A mismatch is deliberately never auto-classified as drift: that would turn the
-drift bucket into a place to hide errors. Unadjudicated mismatches are returned
-as ``not_rerunnable`` with reason ``mismatch_unadjudicated`` so they stay
-visible as unresolved.
+drift bucket into a place to hide errors. A bare ``snapshot=True`` is not a
+reason either. Unadjudicated mismatches are returned as ``not_rerunnable`` with
+reason ``mismatch_unadjudicated`` so they stay visible as unresolved.
+
+Comparison strips leading/trailing whitespace only (a trailing newline is not
+a difference) and preserves internal runs: ``"a  b"`` is not ``"a b"``. Pass
+``collapse_whitespace=True`` to opt in to collapsing runs; the result's reason
+says so.
 """
 from __future__ import annotations
 
@@ -75,7 +81,7 @@ _GIT_LIST_FLAGS = {
     "branch": frozenset({"--list", "-l", "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "--no-color", "--color=never"}),
     "tag": frozenset({"--list", "-l", "-n"}),
 }
-_METACHARS = set("$`\\;<>(){}\n\r")
+_METACHARS = set("$`\\;<>(){}~\n\r")
 _NETWORK_HINT = re.compile(r"https?://|wss?://|ftp://|/dev/(tcp|udp)/", re.IGNORECASE)
 _SEPARATORS = frozenset({"|", "&&"})
 
@@ -115,9 +121,11 @@ def refusal_reason(cmd: str) -> Optional[str]:
 
     Allowlist, not denylist: the command must be a pipeline (``|``) or ``&&``
     chain of allowlisted read-only programs. Any shell metacharacter that can
-    substitute, redirect, group or sequence (``$ ` \\ ; < > ( ) { }``, newlines,
-    a lone ``&``) is refused anywhere in the string, even inside quotes. The only
-    redirect accepted is a literal ``2>&1``.
+    substitute, expand, redirect, group or sequence (``$ ` \\ ; < > ( ) { } ~``,
+    newlines, a lone ``&``) is refused anywhere in the string, even inside
+    quotes. The only redirect accepted is a literal ``2>&1``. Shell builtins
+    that run other code (``eval``, ``exec``, ``source``, ``command``, ...) and
+    interpreters (``python3 -c``, ...) are simply not on the allowlist.
     """
     if not cmd or not cmd.strip():
         return "no_command_recorded"
@@ -182,8 +190,10 @@ class RerunResult:
         return self.cls is RerunClass.DRIFTED
 
 
-def _norm(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value if value is not None else "")).strip()
+def _norm(value: Any, *, collapse: bool = False) -> str:
+    """Strip the ends; collapse internal whitespace runs only when asked."""
+    s = str(value if value is not None else "")
+    return (re.sub(r"\s+", " ", s) if collapse else s).strip()
 
 
 def _run_shell(cmd: str, timeout: float, cwd: Optional[str], nice: int) -> tuple[Optional[str], Optional[str], int]:
@@ -212,20 +222,25 @@ def rerun(
     adjudication: Optional[Adjudication] = None,
     callables: Optional[Mapping[str, Callable[[], Any]]] = None,
     compare: Optional[Callable[[str, str], bool]] = None,
+    collapse_whitespace: bool = False,
 ) -> RerunResult:
     """Re-run one claim record and classify it.
 
     ``record`` needs ``check`` (shell command or ``callable:<name>`` resolved via
     ``callables``) and ``observed``. Optional: ``seq``, ``expected`` (what the
     claim asserted; enables the record-consistency check), ``snapshot`` (truthy
-    means a mismatch is drift by construction - use sparingly and say why in
-    ``snapshot_reason``).
+    plus a non-empty ``snapshot_reason`` means a mismatch is drift by
+    construction - use sparingly; without the reason it stays unresolved).
+
+    Values are compared after stripping leading/trailing whitespace. Internal
+    whitespace runs count as differences unless ``collapse_whitespace=True``.
     """
     seq = record.get("seq")
-    observed = _norm(record.get("observed"))
+    observed = _norm(record.get("observed"), collapse=collapse_whitespace)
     check = str(record.get("check") or record.get("cmd") or "")
     expected = record.get("expected")
-    eq = compare or (lambda a, b: _norm(a) == _norm(b))
+    collapsed_note = " (whitespace runs collapsed)" if collapse_whitespace else ""
+    eq = compare or (lambda a, b: _norm(a, collapse=collapse_whitespace) == _norm(b, collapse=collapse_whitespace))
 
     # Record-consistency first: this needs no execution and catches claims that
     # disagreed with their own output at publish time.
@@ -246,7 +261,7 @@ def rerun(
         if fn is None:
             return RerunResult(seq, RerunClass.NOT_RERUNNABLE, f"callable_not_provided:{name}", observed)
         try:
-            rerun_value = _norm(fn())
+            rerun_value = _norm(fn(), collapse=collapse_whitespace)
         except Exception as exc:  # noqa: BLE001 - the reason is the point
             return RerunResult(seq, RerunClass.NOT_RERUNNABLE, f"callable_raised:{exc.__class__.__name__}", observed)
     else:
@@ -256,26 +271,30 @@ def rerun(
         out, err, ms = _run_shell(check, timeout, cwd, nice)
         if err is not None and out is None:
             return RerunResult(seq, RerunClass.NOT_RERUNNABLE, err, observed, ms=ms)
+        rerun_value = _norm(out, collapse=collapse_whitespace)
         if err is not None:
             # non-zero exit: only trust it if the output still matches exactly.
-            if eq(_norm(out), observed):
-                return RerunResult(seq, RerunClass.STILL_TRUE, f"output_matches_despite_{err}", observed, _norm(out), ms=ms)
-            return RerunResult(seq, RerunClass.NOT_RERUNNABLE, f"check_failed:{err}", observed, _norm(out), ms=ms)
-        rerun_value = _norm(out)
+            if eq(rerun_value, observed):
+                return RerunResult(seq, RerunClass.STILL_TRUE, f"output_matches_despite_{err}{collapsed_note}", observed, rerun_value, ms=ms)
+            return RerunResult(seq, RerunClass.NOT_RERUNNABLE, f"check_failed:{err}", observed, rerun_value, ms=ms)
 
     if eq(rerun_value, observed):
         # an adjudicated strict flag survives a matching re-run (stale restatement).
         if adjudication and adjudication.cls is RerunClass.WRONG_AT_PUBLISH:
             return RerunResult(seq, RerunClass.WRONG_AT_PUBLISH, f"adjudicated: {adjudication.evidence}", observed, rerun_value,
                                strict=adjudication.strict, lenient=adjudication.lenient, ms=ms)
-        return RerunResult(seq, RerunClass.STILL_TRUE, "rerun_matches_observed", observed, rerun_value, ms=ms)
+        return RerunResult(seq, RerunClass.STILL_TRUE, f"rerun_matches_observed{collapsed_note}", observed, rerun_value, ms=ms)
 
-    # Mismatch. Needs a named reason from a human or a declared snapshot.
+    # Mismatch. Needs a named reason from a human or a declared snapshot *with* a reason.
     if adjudication is not None:
         return RerunResult(seq, adjudication.cls, f"adjudicated: {adjudication.evidence}", observed, rerun_value,
                            strict=adjudication.strict, lenient=adjudication.lenient, ms=ms)
     if record.get("snapshot"):
-        return RerunResult(seq, RerunClass.DRIFTED, f"declared_snapshot: {record.get('snapshot_reason') or 'no reason given'}",
+        why_snapshot = str(record.get("snapshot_reason") or "").strip()
+        if why_snapshot:
+            return RerunResult(seq, RerunClass.DRIFTED, f"declared_snapshot: {why_snapshot}", observed, rerun_value, ms=ms)
+        return RerunResult(seq, RerunClass.NOT_RERUNNABLE,
+                           f"mismatch_unadjudicated: snapshot declared without a snapshot_reason; rerun={rerun_value!r} observed={observed!r}",
                            observed, rerun_value, ms=ms)
     return RerunResult(seq, RerunClass.NOT_RERUNNABLE, f"mismatch_unadjudicated: rerun={rerun_value!r} observed={observed!r}",
                        observed, rerun_value, ms=ms)

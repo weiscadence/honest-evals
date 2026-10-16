@@ -23,7 +23,6 @@ sys.path.insert(0, str(HERE.parent / "src"))
 from honest_evals import (  # noqa: E402
     Canary,
     CanaryFailed,
-    FragileFinding,
     Outcome,
     outcomes_from_records,
     selection_effect,
@@ -54,26 +53,41 @@ def main() -> int:
     a_rows, b_rows = load()
     a, b = outcomes_from_records(a_rows), outcomes_from_records(b_rows)
     eff = selection_effect(a, b, name_a="logged_at_claim", name_b="chosen_for_publication", n_boot=5000, seed=0)
+    # Negative control for the sweeps: a null comparison of the logged
+    # population with itself, which must come out a tie. Every sweep below must
+    # change its winner here, or the evaluate is not responding to its setting
+    # and the sweep is vacuous.
+    null = selection_effect(a, a, name_a="logged_at_claim", name_b="logged_at_claim", n_boot=200, seed=0)
+    effects = {"real": eff, "null": null}
+
     # Gates first: nothing numeric is printed until the sweeps are stable and
     # the canary passes.
     # 1. Is the verdict stable under the tunable cutoffs? Four settings:
     #    strict/lenient x drift excluded/included. The winner must not change.
-    settings = [(d, drift) for d in ("strict", "lenient") for drift in (False, True)]
-    finding = sweep(settings, lambda s: eff.winner(s[0], drift_included=s[1]))
+    def winner_at(s: tuple[str, bool, str]) -> str:
+        definition, drift, source = s
+        return effects[source].winner(definition, drift_included=drift)
+
+    settings = [(d, drift, "real") for d in ("strict", "lenient") for drift in (False, True)]
+    finding = sweep(settings, winner_at, negative_control=("strict", False, "null"))
     print("cutoff sweep over (definition, drift_included):", finding.summary())
-    if isinstance(finding, FragileFinding):
-        print("REFUSING to report a headline: the winner depends on the cutoff.")
+    if finding.fragile or finding.vacuous:
+        print("REFUSING to report a headline:", "the winner depends on the cutoff." if finding.fragile else "the sweep is vacuous.")
         return 2
 
     # 2. Also sweep how unresolved rows are treated: best case, point, worst case.
-    def winner_under(treatment: str) -> str:
-        ca, cb = eff.cells[("strict", False)]
+    def winner_under(s: tuple[str, str]) -> str:
+        treatment, source = s
+        e = effects[source]
+        ca, cb = e.cells[("strict", False)]
         pick = {"best": lambda c: c.best_case, "point": lambda c: c.rate, "worst": lambda c: c.worst_case}[treatment]
-        return "logged_at_claim" if pick(ca) > pick(cb) else "chosen_for_publication"
+        if pick(ca) == pick(cb):
+            return "tie"
+        return e.name_a if pick(ca) > pick(cb) else e.name_b
 
-    finding2 = sweep(["best", "point", "worst"], winner_under)
+    finding2 = sweep([(t, "real") for t in ("best", "point", "worst")], winner_under, negative_control=("point", "null"))
     print("cutoff sweep over unresolved treatment:", finding2.summary())
-    if isinstance(finding2, FragileFinding):
+    if finding2.fragile or finding2.vacuous:
         return 2
 
     # 3. Canary: plant a known-false and a known-true row into a copy of the

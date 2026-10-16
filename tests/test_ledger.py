@@ -18,7 +18,7 @@ def test_append_and_verify(tmp_path: Path) -> None:
     led = _three(tmp_path)
     rows = led.records()
     assert [r.seq for r in rows] == [1, 2, 3]
-    assert rows[0].prev == "GENESIS"
+    assert rows[0].prev == f"GENESIS:{led.chain_id}" and led.chain_id
     assert rows[1].prev == rows[0].hash
     assert rows[2].check.startswith("callable:")
     rep = verify_chain(led)

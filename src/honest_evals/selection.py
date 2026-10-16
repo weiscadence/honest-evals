@@ -187,16 +187,31 @@ class ProportionTest:
     p_value: float
     fisher_p: float
     ratio: float
+    reason: str = "ok"  # "ok" or "insufficient_data: ..." (every statistic is then nan)
+
+    @property
+    def insufficient(self) -> bool:
+        return self.reason != "ok"
 
     def summary(self) -> str:
+        if self.insufficient:
+            return f"{self.k1}/{self.n1} vs {self.k2}/{self.n2}: no test ({self.reason})"
         return (f"{self.k1}/{self.n1} vs {self.k2}/{self.n2}: diff {100 * self.difference:+.1f} pts, "
                 f"z={self.z:.2f}, p={self.p_value:.2g} (Fisher p={self.fisher_p:.2g}), ratio {self.ratio:.1f}x")
 
 
 def two_proportion_test(k1: int, n1: int, k2: int, n2: int) -> ProportionTest:
-    """Pooled two-proportion z-test (two-sided) plus Fisher's exact test."""
+    """Pooled two-proportion z-test (two-sided) plus Fisher's exact test.
+
+    A group with no checked rows (every row unresolved) cannot be tested; the
+    result is then a named ``insufficient_data`` ``ProportionTest`` with nan
+    statistics rather than an exception, so a report can still show the cell.
+    """
     if n1 <= 0 or n2 <= 0:
-        raise ValueError("both groups need at least one checked row")
+        empty = [name for name, n in (("group 1", n1), ("group 2", n2)) if n <= 0]
+        nan = float("nan")
+        return ProportionTest(k1, n1, k2, n2, nan, nan, nan, nan, nan,
+                              reason=f"insufficient_data: {' and '.join(empty)} has no checked rows")
     p1, p2 = k1 / n1, k2 / n2
     pooled = (k1 + k2) / (n1 + n2)
     se = np.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2))

@@ -68,8 +68,7 @@ def test_two_proportion_test() -> None:
     assert t.ratio == pytest.approx(0.375 / (3 / 77))
     same = two_proportion_test(5, 10, 5, 10)
     assert same.p_value == pytest.approx(1.0) and same.z == 0
-    with pytest.raises(ValueError):
-        two_proportion_test(0, 0, 1, 2)
+    assert two_proportion_test(0, 0, 1, 2).insufficient
 
 
 def test_selection_effect_frame_and_winner() -> None:

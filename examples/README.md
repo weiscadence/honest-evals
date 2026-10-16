@@ -68,15 +68,20 @@ should be.
 ## Step 3: is the verdict fragile?
 
 ```python
-settings = [(d, drift) for d in ("strict", "lenient") for drift in (False, True)]
-finding = sweep(settings, lambda s: eff.winner(s[0], drift_included=s[1]))
+null = selection_effect(a, a, ...)   # negative control: a population against itself must tie
+settings = [(d, drift, "real") for d in ("strict", "lenient") for drift in (False, True)]
+finding = sweep(settings, winner_at, negative_control=("strict", False, "null"))
 ```
 
 `sweep` refuses fewer than three settings and returns a `FragileFinding` if the
-winner changes. Here it is `STABLE: winner 'logged_at_claim' at all 4 settings`.
-A second sweep over how unresolved rows are treated (best case, point estimate,
-worst case) is also stable. If either had been fragile the script exits 2 and
-prints no headline.
+winner changes. It also evaluates the negative control, a setting where the
+winner *must* change; if it does not, the evaluate is not responding to its
+setting and the result is `VacuousFinding`, not a hollow STABLE. Here it is
+`STABLE: winner 'logged_at_claim' at all 4 settings ...; negative control
+('strict', False, 'null') flipped it to 'tie'`. A second sweep over how
+unresolved rows are treated (best case, point estimate, worst case) is also
+stable with the same control. If either had been fragile or vacuous the
+script exits 2 and prints no headline.
 
 ## Step 4: the canary
 

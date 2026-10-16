@@ -14,8 +14,9 @@ We built this to answer one reviewer question about an AI agent's self-reports:
 *errors per auditable claim, with a known denominator*. Answering it needed
 four things the usual eval stack does not give you:
 
-1. A record of claims written **before** their verdicts, so the denominator
-   cannot be curated (`ledger`), with truncation detectable, not just edits.
+1. A record of claims written **before** their verdicts, so that curating the
+   denominator afterwards is detectable given an external anchor (`ledger`),
+   with truncation and chain substitution detectable, not just edits.
 2. A way to re-execute each claim's check safely and to say *why* a row could
    not be re-run, instead of dropping it (`rerun`).
 3. Statistics that treat two differently-selected populations as two
@@ -58,8 +59,13 @@ assert rep.ok, rep.reason      # "hash mismatch (record edited...)", "truncated.
 ```
 
 Each record carries `prev` and `hash` (sha256 over every other field, including
-`meta`). A sidecar `claims.jsonl.head` records the last hash; a shortened file
-still has valid internal links, so the head check is what catches truncation.
+`meta`). Row 1's `prev` is `GENESIS:<chain_id>`, so the chain's identity is
+bound into every hash: pass `Ledger(path, chain_id=...)` or
+`verify_chain(..., chain_id=...)` and a substitute chain written from scratch
+is refused (a fresh ledger gets a random id; read it from `led.chain_id`). A
+sidecar `claims.jsonl.head` records the last hash and the chain id; a
+shortened file still has valid internal links, so the head check is what
+catches truncation.
 `append` refuses to extend a broken chain and refuses a timestamp earlier than
 the last row; `verify_chain` flags backdated rows too. Fields are hashed with a
 length-prefixed encoding, so no field content can collide with another record.
@@ -93,8 +99,11 @@ substitute, redirect, group or sequence (`$ \` ; < > ( ) { }`, newlines, a
 lone `&`) anywhere in the string, any URL and any `/dev/tcp`. Only a literal
 `2>&1` is accepted. A mismatch is **never**
 auto-classified as drift: you either pass an `Adjudication` with evidence, or
-mark the record `snapshot=True` with a `snapshot_reason`, or it stays
-unresolved. If the record carries `expected` (what the claim asserted) and it
+mark the record `snapshot=True` *with a non-empty* `snapshot_reason` (a bare
+`snapshot=True` stays unresolved), or it stays unresolved. Outputs are
+compared with leading/trailing whitespace stripped and internal runs
+preserved (`"a  b"` is not `"a b"`); `collapse_whitespace=True` opts in to
+collapsing. If the record carries `expected` (what the claim asserted) and it
 disagrees with `observed` (what the check printed at the time), the row is
 `wrong_at_publish` without running anything.
 
@@ -109,6 +118,9 @@ eff.cells[("strict", False)]   # (RateCell, RateCell): rate, wilson, bootstrap, 
 eff.tests[("strict", False)]   # two-proportion z + Fisher exact
 eff.to_frame()                 # pandas DataFrame, 8 rows
 ```
+
+If one population has no checked rows at all, the test is a named
+`insufficient_data` result (`.insufficient`, nan statistics), not an exception.
 
 ### canary: no "clean" without a caught plant
 
@@ -136,16 +148,21 @@ c.observe(find_bad(c.data))`. Leaving the block without a passing observation ra
 ```python
 from honest_evals import sweep, FragileFinding
 
-finding = sweep([0.01, 0.05, 0.10], lambda alpha: rank_strategies(alpha))
-if isinstance(finding, FragileFinding):
+finding = sweep([0.01, 0.05, 0.10], lambda alpha: rank_strategies(alpha), negative_control=1.0)
+if finding.fragile:
     print(finding.summary())   # "FRAGILE: winner depends on the threshold - 'B' wins at [0.01]; 'A' wins at [0.05, 0.1]"
+elif finding.vacuous:
+    print(finding.summary())   # "VACUOUS: ... still 'A' at the negative control 1.0, where it had to change"
 else:
     finding.winner
 ```
 
 Requires at least three distinct settings. `evaluate` returns a verdict or a
 ranking; the winner must be the same everywhere or you get a `FragileFinding`
-with no `winner`.
+with no `winner`. `negative_control` is a setting at which the winner *must*
+change; if it does not, the evaluate is not responding to its setting and you
+get a `VacuousFinding` (also no `winner`) instead of a hollow STABLE. Winners
+are compared by type as well as value (`1` and `True` are different winners).
 
 ## Honest limits
 
@@ -161,11 +178,14 @@ with no `winner`.
   it down, but it cannot check it. Unadjudicated mismatches stay unresolved on
   purpose.
 - **The ledger proves the record was not altered after writing**, not that the
-  record was complete. Claims never logged are invisible to it. Truncation is
-  only detectable if the attacker does not also rewrite the head file; keep the
-  head file (or its hash) somewhere else if that matters.
-- **Canaries prove the checker can catch the plant you chose.** Choose plants
+  record was complete. Claims never logged are invisible to it. Truncation and
+  wholesale substitution are only detectable against something the writer
+  cannot silently change: anchor the head file (hash and chain id) externally.
+- **Canaries prove the checker catches the plants you chose.** Choose plants
   that look like real failures, and more than one over time.
+- **A negative control is only as good as the control.** `VacuousFinding`
+  needs a setting where the winner truly must flip; if you pick one where it
+  need not, a live evaluate can be mislabelled vacuous.
 - **Small n.** Wilson and bootstrap intervals are reported because at n=16 the
   point estimate is nearly meaningless; quote the interval.
 - The selection-effect test compares detected-by-self error rates between two

@@ -66,16 +66,42 @@ def _plant(data: Sequence[T], false_item: T, true_item: T, rng: random.Random) -
     return planted
 
 
+def _failed(reason: str) -> CanaryVerdict:
+    return CanaryVerdict(False, False, False, reason, 0)
+
+
+def _count_distinct(keys: list[Any]) -> int:
+    """Distinct count that tolerates unhashable keys (dicts, lists) by falling back to equality."""
+    try:
+        return len(set(keys))
+    except TypeError:
+        distinct: list[Any] = []
+        for k in keys:
+            if k not in distinct:
+                distinct.append(k)
+        return len(distinct)
+
+
 def _judge(flagged: Flagged, false_item: Any, true_item: Any, key: Callable[[Any], Hashable]) -> tuple[CanaryVerdict, list[Any]]:
-    flagged = list(flagged)
+    """Judge what a checker flagged. Never raises for a badly-shaped result: an
+    unusable result is a failed canary, not a crash the caller can mistake for
+    something else (or, worse, swallow as 'clean')."""
+    try:
+        flagged = list(flagged)
+    except TypeError as exc:
+        return _failed(f"canary FAIL: checker returned a non-iterable ({exc.__class__.__name__}: {exc})"), []
     # The checker may return items or already-extracted keys; accept both.
-    flagged_keys: list[Hashable] = []
+    # Keys need not be hashable: membership below is by equality.
+    flagged_keys: list[Any] = []
     for f in flagged:
         try:
             flagged_keys.append(key(f))
         except (TypeError, KeyError, AttributeError, IndexError):
             flagged_keys.append(f)
-    fk, tk = key(false_item), key(true_item)
+    try:
+        fk, tk = key(false_item), key(true_item)
+    except Exception as exc:  # noqa: BLE001
+        return _failed(f"canary FAIL: key() failed on a planted item ({exc.__class__.__name__}: {exc})"), []
     caught = fk in flagged_keys
     passed_true = tk not in flagged_keys
     if caught and passed_true:
@@ -87,7 +113,7 @@ def _judge(flagged: Flagged, false_item: Any, true_item: Any, key: Callable[[Any
     else:
         reason = "canary FAIL: planted true item was flagged (checker flags indiscriminately)"
     real = [f for f, k in zip(flagged, flagged_keys) if k != fk and k != tk]
-    return CanaryVerdict(caught and passed_true, caught, passed_true, reason, len(set(flagged_keys))), real
+    return CanaryVerdict(caught and passed_true, caught, passed_true, reason, _count_distinct(flagged_keys)), real
 
 
 def run_canary(
@@ -169,7 +195,13 @@ class Canary(Generic[T]):
         self.verdict: Optional[CanaryVerdict] = None
 
     def observe(self, flagged: Flagged) -> CanaryVerdict:
-        self.verdict, _ = _judge(flagged, self.false_item, self.true_item, self._key)
+        """Record what the checker flagged on ``.data``. A result the judge cannot
+        use (non-iterable, key() failing) is a failed verdict, never an exception
+        escaping as something other than ``CanaryFailed`` at block exit."""
+        try:
+            self.verdict, _ = _judge(flagged, self.false_item, self.true_item, self._key)
+        except Exception as exc:  # noqa: BLE001 - belt and braces; _judge should not raise
+            self.verdict = _failed(f"canary FAIL: could not judge flags ({exc.__class__.__name__}: {exc})")
         return self.verdict
 
     def __enter__(self) -> "Canary[T]":
