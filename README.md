@@ -83,7 +83,7 @@ verify_chain("claims.jsonl", anchor=anchor)   # fails if the chain was rewritten
 ### rerun: re-execute read-only checks, name every refusal
 
 ```python
-from honest_evals import rerun, Adjudication, RerunClass
+from honest_evals import rerun, Adjudication, DriftAdjudication, RerunClass
 
 r = rerun({"seq": 1, "check": "wc -l data.jsonl", "observed": "830"}, timeout=10)
 r.cls      # still_true | drifted | wrong_at_publish | not_rerunnable
@@ -98,9 +98,16 @@ is refused with a named reason, as is any shell metacharacter that could
 substitute, redirect, group or sequence (`$ \` ; < > ( ) { }`, newlines, a
 lone `&`) anywhere in the string, any URL and any `/dev/tcp`. Only a literal
 `2>&1` is accepted. A mismatch is **never**
-auto-classified as drift: you either pass an `Adjudication` with evidence, or
-mark the record `snapshot=True` *with a non-empty* `snapshot_reason` (a bare
-`snapshot=True` stays unresolved), or it stays unresolved. Outputs are
+auto-classified as drift, and no free text can make it one: `snapshot` /
+`snapshot_reason` on the record are ignored for classification, and a plain
+`Adjudication` refuses `RerunClass.DRIFTED` at construction. Drift needs a
+`DriftAdjudication(record_hash, seq, evidence)` bound to the ledger record:
+`rerun` checks that the record's `seq` and `hash` match *and* that the hash
+recomputes from the record's fields, so an edited record does not inherit an
+earlier verdict and a record with no ledger hash cannot be adjudicated as
+drift at all. Anything else stays unresolved with a named reason
+(`mismatch_unadjudicated`, `drift_adjudication_unbound: ...`). Other verdicts
+(`wrong_at_publish`) still take a plain `Adjudication`. Outputs are
 compared with leading/trailing whitespace stripped and internal runs
 preserved (`"a  b"` is not `"a b"`); `collapse_whitespace=True` opts in to
 collapsing. If the record carries `expected` (what the claim asserted) and it
@@ -146,23 +153,32 @@ c.observe(find_bad(c.data))`. Leaving the block without a passing observation ra
 ### cutoffs: sweep the knob or do not report
 
 ```python
-from honest_evals import sweep, FragileFinding
+from honest_evals import sweep
 
 finding = sweep([0.01, 0.05, 0.10], lambda alpha: rank_strategies(alpha), negative_control=1.0)
 if finding.fragile:
     print(finding.summary())   # "FRAGILE: winner depends on the threshold - 'B' wins at [0.01]; 'A' wins at [0.05, 0.1]"
 elif finding.vacuous:
     print(finding.summary())   # "VACUOUS: ... still 'A' at the negative control 1.0, where it had to change"
+                               # or "UNPROVEN: winner 'A' at all 3 settings, but none of the 5 hidden controls flipped it ..."
 else:
-    finding.winner
+    finding.winner             # only a StableFinding has one; finding.proven is True
 ```
 
 Requires at least three distinct settings. `evaluate` returns a verdict or a
 ranking; the winner must be the same everywhere or you get a `FragileFinding`
-with no `winner`. `negative_control` is a setting at which the winner *must*
-change; if it does not, the evaluate is not responding to its setting and you
-get a `VacuousFinding` (also no `winner`) instead of a hollow STABLE. Winners
-are compared by type as well as value (`1` and `True` are different winners).
+with no `winner`. Controls are mandatory: besides any `negative_control` you
+name (a setting at which the winner *must* change; if it does not, you get a
+`VacuousFinding`), the sweep draws **hidden controls** from a seed generated
+after `evaluate` is bound. For numeric settings they are random values outside
+the swept range and on either side of each named control; for other settings
+pass `derive_controls=lambda rng: [...]`. STABLE requires at least one hidden
+control to flip the winner. If none does, or none could be derived, the result
+is an `UnprovenFinding`: `.vacuous` is True, `.proven` is False, no `winner`.
+An evaluate that flips only at the one control value it was told about is
+therefore not proven. `finding.seed` replays the draw (`sweep(..., seed=)`).
+Winners are compared by type as well as value (`1` and `True` are different
+winners).
 
 ## Honest limits
 
@@ -186,6 +202,17 @@ are compared by type as well as value (`1` and `True` are different winners).
 - **A negative control is only as good as the control.** `VacuousFinding`
   needs a setting where the winner truly must flip; if you pick one where it
   need not, a live evaluate can be mislabelled vacuous.
+- **Hidden controls prove responsiveness, not correctness.** They catch an
+  evaluate that ignores its setting or special-cases one known control value.
+  An evaluate that flips at *anything* outside the swept range passes. For
+  numeric settings the draws stay within a few spans of the range, so a
+  legitimately stable evaluate whose true flip point is far away comes out
+  UNPROVEN unless you name a control (draws are then also made around it).
+  With `derive_controls` over a small space (the worked example has four null
+  settings) an evaluate that special-cases the whole space still passes.
+- **`DriftAdjudication` binds a verdict to a record, not to the truth.** The
+  hash check proves the adjudicator looked at this exact record; whether the
+  data really drifted is still their claim.
 - **Small n.** Wilson and bootstrap intervals are reported because at n=16 the
   point estimate is nearly meaningless; quote the interval.
 - The selection-effect test compares detected-by-self error rates between two

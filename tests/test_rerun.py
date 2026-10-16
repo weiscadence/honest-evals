@@ -60,15 +60,23 @@ def test_mismatch_unadjudicated_stays_unresolved() -> None:
     assert r.cls is RerunClass.NOT_RERUNNABLE and r.reason.startswith("mismatch_unadjudicated")
 
 
-def test_mismatch_adjudicated_drift() -> None:
-    adj = Adjudication(RerunClass.DRIFTED, "append-only log grew")
-    r = rerun({"seq": 6, "check": "echo 7", "observed": "6"}, adjudication=adj)
+def test_mismatch_adjudicated_drift_bound_to_ledger_record(tmp_path) -> None:
+    from dataclasses import asdict
+
+    from honest_evals.ledger import Ledger
+    from honest_evals.rerun import DriftAdjudication
+
+    rec = Ledger(tmp_path / "l.jsonl").append("log has 6 lines", "echo 7", "6", "numeric")
+    adj = DriftAdjudication(rec.hash, rec.seq, "append-only log grew")
+    r = rerun(asdict(rec), adjudication=adj)
     assert r.cls is RerunClass.DRIFTED and r.drift and not r.strict
+    with pytest.raises(TypeError):
+        Adjudication(RerunClass.DRIFTED, "append-only log grew")
 
 
-def test_declared_snapshot_is_drift() -> None:
+def test_declared_snapshot_is_not_drift() -> None:
     r = rerun({"seq": 7, "check": "echo 7", "observed": "6", "snapshot": True, "snapshot_reason": "live board"})
-    assert r.cls is RerunClass.DRIFTED and "live board" in r.reason
+    assert r.cls is RerunClass.NOT_RERUNNABLE and r.reason.startswith("mismatch_unadjudicated")
 
 
 def test_record_consistency_catches_wrong_at_publish() -> None:
@@ -98,5 +106,5 @@ def test_callable_check() -> None:
 
 def test_rerun_many_applies_adjudications() -> None:
     recs = [{"seq": 1, "check": "echo 1", "observed": "1"}, {"seq": 2, "check": "echo 2", "observed": "3"}]
-    out = rerun_many(recs, adjudications={2: Adjudication(RerunClass.DRIFTED, "grew")})
-    assert [r.cls for r in out] == [RerunClass.STILL_TRUE, RerunClass.DRIFTED]
+    out = rerun_many(recs, adjudications={2: Adjudication(RerunClass.WRONG_AT_PUBLISH, "misread", strict=True)})
+    assert [r.cls for r in out] == [RerunClass.STILL_TRUE, RerunClass.WRONG_AT_PUBLISH]

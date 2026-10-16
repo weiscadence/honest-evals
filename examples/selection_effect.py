@@ -56,7 +56,11 @@ def main() -> int:
     # Negative control for the sweeps: a null comparison of the logged
     # population with itself, which must come out a tie. Every sweep below must
     # change its winner here, or the evaluate is not responding to its setting
-    # and the sweep is vacuous.
+    # and the sweep is vacuous. The settings are tuples, so the sweep cannot
+    # derive hidden controls itself; derive_controls draws them from the null
+    # comparison with a seed the evaluates never see. (The space is small: an
+    # evaluate that special-cased every null setting would still pass. That is
+    # the limit of this example's control, and it is said in the README.)
     null = selection_effect(a, a, name_a="logged_at_claim", name_b="logged_at_claim", n_boot=200, seed=0)
     effects = {"real": eff, "null": null}
 
@@ -69,7 +73,9 @@ def main() -> int:
         return effects[source].winner(definition, drift_included=drift)
 
     settings = [(d, drift, "real") for d in ("strict", "lenient") for drift in (False, True)]
-    finding = sweep(settings, winner_at, negative_control=("strict", False, "null"))
+    finding = sweep(settings, winner_at, negative_control=("strict", False, "null"),
+                    derive_controls=lambda rng: rng.sample([(d, drift, "null") for d in ("strict", "lenient") for drift in (False, True)
+                                                            if (d, drift) != ("strict", False)], 2))
     print("cutoff sweep over (definition, drift_included):", finding.summary())
     if finding.fragile or finding.vacuous:
         print("REFUSING to report a headline:", "the winner depends on the cutoff." if finding.fragile else "the sweep is vacuous.")
@@ -85,7 +91,8 @@ def main() -> int:
             return "tie"
         return e.name_a if pick(ca) > pick(cb) else e.name_b
 
-    finding2 = sweep([(t, "real") for t in ("best", "point", "worst")], winner_under, negative_control=("point", "null"))
+    finding2 = sweep([(t, "real") for t in ("best", "point", "worst")], winner_under, negative_control=("point", "null"),
+                     derive_controls=lambda rng: [(rng.choice(("best", "worst")), "null")])
     print("cutoff sweep over unresolved treatment:", finding2.summary())
     if finding2.fragile or finding2.vacuous:
         return 2

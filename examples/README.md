@@ -70,18 +70,26 @@ should be.
 ```python
 null = selection_effect(a, a, ...)   # negative control: a population against itself must tie
 settings = [(d, drift, "real") for d in ("strict", "lenient") for drift in (False, True)]
-finding = sweep(settings, winner_at, negative_control=("strict", False, "null"))
+finding = sweep(settings, winner_at, negative_control=("strict", False, "null"),
+                derive_controls=lambda rng: rng.sample(<the other three null settings>, 2))
 ```
 
 `sweep` refuses fewer than three settings and returns a `FragileFinding` if the
 winner changes. It also evaluates the negative control, a setting where the
 winner *must* change; if it does not, the evaluate is not responding to its
-setting and the result is `VacuousFinding`, not a hollow STABLE. Here it is
+setting and the result is `VacuousFinding`, not a hollow STABLE. Controls are
+mandatory: the settings here are tuples, so the sweep cannot derive hidden
+controls itself and `derive_controls` draws two more null settings with a seed
+the evaluate never sees; without a hidden control that flips the winner the
+result would be `UnprovenFinding` and the script would exit 2. Here it is
 `STABLE: winner 'logged_at_claim' at all 4 settings ...; negative control
-('strict', False, 'null') flipped it to 'tie'`. A second sweep over how
-unresolved rows are treated (best case, point estimate, worst case) is also
-stable with the same control. If either had been fragile or vacuous the
-script exits 2 and prints no headline.
+('strict', False, 'null') flipped it to 'tie'; 2/2 hidden controls flipped it
+(seed ...)`. The null space is only four settings, so this guards against an
+evaluate that special-cases the one named control, not one that special-cases
+all four. A second sweep over how unresolved rows are treated (best case,
+point estimate, worst case) is also stable with the same control and one hidden
+draw. If either had been fragile, vacuous or unproven the script exits 2 and
+prints no headline.
 
 ## Step 4: the canary
 

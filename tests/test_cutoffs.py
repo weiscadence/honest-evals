@@ -33,6 +33,8 @@ def test_stable_when_all_settings_agree() -> None:
 
 def test_order_instability_below_winner_is_reported() -> None:
     def rank(t: int) -> list[str]:
+        if t < 0:
+            return ["q"]  # hidden controls below the range flip the winner: the evaluate is live
         return ["x", "y", "z"] if t < 2 else ["x", "z", "y"]
 
     f = sweep([0, 1, 2], rank)

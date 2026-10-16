@@ -5,6 +5,7 @@ were already closed by c556d5c; their tests here pin the behaviour.
 """
 import math
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -85,12 +86,12 @@ def test_L1_anchor_carries_chain_id(tmp_path: Path) -> None:
 def test_R1_snapshot_without_reason_is_not_drift(rec: dict) -> None:
     r = rerun({"seq": 1, "check": "echo 7", "observed": "6", **rec})
     assert r.cls is RerunClass.NOT_RERUNNABLE and not r.drift and not r.checked
-    assert r.reason.startswith("mismatch_unadjudicated") and "snapshot_reason" in r.reason
+    assert r.reason.startswith("mismatch_unadjudicated") and "snapshot" in r.reason
 
 
-def test_R1_snapshot_with_reason_is_drift() -> None:
+def test_R1_snapshot_with_reason_is_still_not_drift() -> None:
     r = rerun({"seq": 1, "check": "echo 7", "observed": "6", "snapshot": True, "snapshot_reason": "live board"})
-    assert r.cls is RerunClass.DRIFTED and "live board" in r.reason
+    assert r.cls is RerunClass.NOT_RERUNNABLE and "live board" in r.reason and "not an adjudication" in r.reason
 
 
 # ---------------------------------------------------------------- R2 allowlist bypasses
@@ -218,7 +219,7 @@ def test_T1_one_and_true_are_different_winners() -> None:
     assert isinstance(f, FragileFinding) and f.winner is None
     assert "1 wins" in f.summary() and "True wins" in f.summary()
     g = sweep([0, 1, 2], lambda s: [1, 0] if s < 2 else [1, False])
-    assert isinstance(g, StableFinding) and not g.order_stable
+    assert isinstance(g, UnprovenFinding) and not g.order_stable  # winner 1 everywhere, nothing flipped it
 
 
 # ---------------------------------------------------------------- T2 vacuous evaluate
@@ -232,8 +233,9 @@ def test_T2_negative_control_that_flips_keeps_stable() -> None:
     f = sweep([1, 2, 3], lambda s: "A" if s < 50 else "B", negative_control=99)
     assert isinstance(f, StableFinding) and f.winner == "A" and f.controlled
     assert "control" in f.summary()
+    # without the named control the hidden draws (within a few spans of [1, 3]) never reach 50: unproven, not stable
     u = sweep([1, 2, 3], lambda s: "A" if s < 50 else "B")
-    assert isinstance(u, StableFinding) and not u.controlled and "no negative control" in u.summary()
+    assert isinstance(u, UnprovenFinding) and not u.proven and u.summary().startswith("UNPROVEN")
 
 
 def test_T2_control_must_not_be_a_sweep_setting() -> None:
@@ -248,3 +250,105 @@ def test_T2_example_sweeps_carry_a_flipping_negative_control() -> None:
     root = Path(__file__).resolve().parents[1]
     out = subprocess.run([sys.executable, str(root / "examples" / "selection_effect.py")], capture_output=True, text=True, timeout=180).stdout
     assert out.count("negative control") == 2 and "flipped it to 'tie'" in out and "VACUOUS" not in out
+
+
+# ================================================================ re-test survivors (R1, T2, T2b)
+from dataclasses import asdict  # noqa: E402
+
+from honest_evals.cutoffs import UnprovenFinding  # noqa: E402
+from honest_evals.rerun import Adjudication, DriftAdjudication  # noqa: E402
+
+
+@pytest.mark.parametrize("why", ["trust me", "live board", "x"])
+def test_R1_free_text_snapshot_reason_is_never_drift(why: str) -> None:
+    r = rerun({"seq": 1, "check": "echo 7", "observed": "6", "snapshot": True, "snapshot_reason": why})
+    assert r.cls is RerunClass.NOT_RERUNNABLE and r.reason.startswith("mismatch_unadjudicated")
+
+
+def test_R1_plain_adjudication_cannot_declare_drift() -> None:
+    with pytest.raises(TypeError):
+        Adjudication(RerunClass.DRIFTED, "append-only log grew")
+
+
+def test_R1_drift_needs_adjudication_bound_to_ledger_record(tmp_path: Path) -> None:
+    led = Ledger(tmp_path / "c.jsonl", chain_id="z")
+    rec = led.append("board shows 6", "echo 7", "6", "state")
+    adj = DriftAdjudication(record_hash=rec.hash, seq=rec.seq, evidence="live board, append-only")
+    r = rerun(asdict(rec), adjudication=adj)
+    assert r.cls is RerunClass.DRIFTED and r.drift and "append-only" in r.reason
+    # wrong hash: not bound to this record
+    bad = DriftAdjudication(record_hash="0" * 64, seq=rec.seq, evidence="live board")
+    r2 = rerun(asdict(rec), adjudication=bad)
+    assert r2.cls is RerunClass.NOT_RERUNNABLE and r2.reason.startswith("drift_adjudication_unbound")
+    # wrong seq
+    r3 = rerun(asdict(rec), adjudication=DriftAdjudication(record_hash=rec.hash, seq=rec.seq + 1, evidence="e"))
+    assert r3.cls is RerunClass.NOT_RERUNNABLE and r3.reason.startswith("drift_adjudication_unbound")
+    # record fields edited after adjudication: recomputed hash no longer matches the one adjudicated
+    edited = {**asdict(rec), "observed": "5"}
+    r4 = rerun(edited, adjudication=adj)
+    assert r4.cls is RerunClass.NOT_RERUNNABLE and r4.reason.startswith("drift_adjudication_unbound")
+    # a record with no ledger hash at all cannot be adjudicated as drift
+    r5 = rerun({"seq": 1, "check": "echo 7", "observed": "6"}, adjudication=DriftAdjudication("", 1, "e"))
+    assert r5.cls is RerunClass.NOT_RERUNNABLE and r5.reason.startswith("drift_adjudication_unbound")
+    with pytest.raises(ValueError):
+        DriftAdjudication(record_hash=rec.hash, seq=rec.seq, evidence="   ")
+
+
+def test_T2_default_path_vacuous_sweep_is_unproven_not_stable() -> None:
+    f = sweep([1, 2, 3], lambda s: "A")
+    assert isinstance(f, UnprovenFinding) and not isinstance(f, StableFinding)
+    assert f.vacuous and f.winner is None and not f.fragile and not f.proven
+    assert f.summary().startswith("UNPROVEN")
+
+
+def test_T2_default_path_derives_hidden_controls_and_proves_a_live_evaluate() -> None:
+    seen: list[Any] = []
+
+    def ev(s: Any) -> str:
+        seen.append(s)
+        return "A" if 0 <= s <= 10 else "B"
+
+    f = sweep([1, 5, 10], ev)
+    assert isinstance(f, StableFinding) and f.proven and f.winner == "A" and f.controlled
+    assert f.seed is not None and len(f.controls) >= 2
+    assert all(c.setting not in (1, 5, 10) for c in f.controls)
+    # replay with the recorded seed is reproducible; a different seed draws different controls
+    g = sweep([1, 5, 10], ev, seed=f.seed)
+    assert [c.setting for c in g.controls] == [c.setting for c in f.controls]
+    h = sweep([1, 5, 10], ev, seed=f.seed + 1)
+    assert [c.setting for c in h.controls] != [c.setting for c in f.controls]
+
+
+def test_T2b_evaluate_that_flips_only_at_the_known_control_is_not_proven() -> None:
+    def gamed(s: Any) -> str:
+        return "B" if s == 99 else "A"
+
+    f = sweep([1, 2, 3], gamed, negative_control=99)
+    assert not isinstance(f, StableFinding) and f.winner is None and not f.proven
+    assert f.vacuous
+    # the honest version of the same evaluate is proven
+    g = sweep([1, 2, 3], lambda s: "A" if s < 50 else "B", negative_control=99)
+    assert isinstance(g, StableFinding) and g.proven
+
+
+def test_T2b_explicit_control_that_fails_to_flip_is_vacuous() -> None:
+    f = sweep([1, 2, 3], lambda s: "A" if s < 50 else "B", negative_control=20)
+    assert isinstance(f, VacuousFinding) and f.vacuous and f.winner is None
+
+
+def test_T2b_non_numeric_settings_need_a_control_deriver() -> None:
+    f = sweep(["a", "b", "c"], lambda s: "A" if s in "abc" else "B")
+    assert isinstance(f, UnprovenFinding) and "derive" in f.summary()
+    g = sweep(["a", "b", "c"], lambda s: "A" if s in "abc" else "B",
+              derive_controls=lambda rng: [rng.choice(["x", "y", "z"]) for _ in range(2)])
+    assert isinstance(g, StableFinding) and g.proven
+    # a deriver that yields a sweep setting is an error, not a silent pass
+    with pytest.raises(ValueError):
+        sweep(["a", "b", "c"], lambda s: "A", derive_controls=lambda rng: ["a"])
+
+
+def test_T2b_seed_is_drawn_after_evaluate_is_bound() -> None:
+    # two default sweeps of the same evaluate draw different hidden controls
+    ev = lambda s: "A" if s < 50 else "B"  # noqa: E731
+    a, b = sweep([1, 2, 3], ev), sweep([1, 2, 3], ev)
+    assert a.seed != b.seed
