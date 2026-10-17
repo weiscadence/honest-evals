@@ -453,5 +453,5 @@ def test_T2d_gerrymandered_settings_are_out_of_scope_and_said_so() -> None:
     settings, not more probing. The README must say this."""
     f = sweep([0.01, 0.05, 0.10], lambda s: "A" if s in (0.01, 0.05, 0.10) else "B", seed=5)
     assert isinstance(f, StableFinding) and f.probing_limit is None
-    readme = open("README.md").read()
+    readme = " ".join(open("README.md").read().split())
     assert "pre-register" in readme.lower() and "draw loop" in readme.lower()
