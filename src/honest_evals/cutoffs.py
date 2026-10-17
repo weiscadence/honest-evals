@@ -91,6 +91,7 @@ class StableFinding:
     controls: tuple[SweepPoint, ...] = ()  # hidden controls (``flipped`` says whether each changed the winner)
     named_controls: tuple[SweepPoint, ...] = ()
     seed: Optional[int] = None
+    probing_limit: Optional[str] = None  # set when the responsiveness proof rests on out-of-range probes only
 
     @property
     def fragile(self) -> bool:
@@ -112,7 +113,8 @@ class StableFinding:
         return (f"STABLE: winner {self.winner!r} at all {len(self.points)} settings "
                 f"({', '.join(repr(p.setting) for p in self.points)}); "
                 + _controls_note(self.named_controls, self.controls, self.seed)
-                + ("" if self.order_stable else "; full ranking order changed below the winner"))
+                + ("" if self.order_stable else "; full ranking order changed below the winner")
+                + (f"; CAVEAT: {self.probing_limit}" if self.probing_limit else ""))
 
 
 @dataclass(frozen=True)
@@ -251,6 +253,12 @@ def _derive_numeric_controls(settings: Sequence[Any], named: Sequence[Any], rng:
     push(hi + rng.uniform(0.5, 4.0) * span)
     for _ in range(max(0, n - 2)):
         push((lo - rng.uniform(0.5, 4.0) * span) if rng.random() < 0.5 else (hi + rng.uniform(0.5, 4.0) * span))
+    # In-range probes too (midpoints between adjacent settings): a flip at one of
+    # these is proof that does NOT rest on out-of-range values, which a
+    # range-aware adversary could distinguish (see probing_limit).
+    ordered = sorted(set(s for s in settings if _is_number(s)))
+    for a, b in zip(ordered, ordered[1:]):
+        push(a + rng.uniform(0.25, 0.75) * (b - a))
     for c in named:
         if not _is_number(c):
             continue
@@ -316,7 +324,38 @@ def sweep(
     if derive_controls is not None and not hidden_settings and unprovable is None:
         unprovable = "derive_controls yielded no hidden controls distinct from the named ones"
 
-    points = [_point(s, evaluate) for s in settings]
+    # T2c defense: settings, named controls and hidden controls are evaluated in
+    # ONE seeded shuffled pass, and EVERY value is evaluated twice at two
+    # different shuffled positions. A call-counting evaluate (one that answers
+    # by position, not by its setting) must answer some duplicated pair
+    # inconsistently: any flip after call k splits the pair of at least one
+    # value whose first copy landed at or before k. Inconsistency is itself the
+    # verdict - the evaluate is not a function of its setting.
+    entries: list[tuple[str, int, int, Any]] = [
+        (kind, i, copy, v)
+        for kind, vals in (("s", settings), ("n", named), ("h", hidden_settings))
+        for i, v in enumerate(vals)
+        for copy in (0, 1)
+    ]
+    rng.shuffle(entries)
+    raw: dict[tuple[str, int, int], SweepPoint] = {}
+    for kind, i, copy, setting in entries:
+        if kind == "s":
+            raw[(kind, i, copy)] = _point(setting, evaluate)  # a setting the evaluate cannot handle is the caller's error
+        else:
+            try:
+                raw[(kind, i, copy)] = _point(setting, evaluate)
+            except Exception as exc:  # noqa: BLE001 - a control the evaluate cannot handle proves nothing
+                raw[(kind, i, copy)] = SweepPoint(setting, None, (), f"raised:{exc.__class__.__name__}", flipped=False)
+    for kind, vals in (("s", settings), ("n", named), ("h", hidden_settings)):
+        for i, v in enumerate(vals):
+            a, b = raw[(kind, i, 0)], raw[(kind, i, 1)]
+            if tuple(map(_ident, a.ranking)) != tuple(map(_ident, b.ranking)) or (a.winner is None) != (b.winner is None):
+                raise ValueError(
+                    f"evaluate returned different verdicts for the same setting {v!r} at two positions "
+                    f"({a.verdict!r} vs {b.verdict!r}): it is not a function of its setting, so no sweep of it means anything")
+
+    points = [raw[("s", i, 0)] for i in range(len(settings))]
     groups: dict[tuple[type, Any], tuple[Hashable, list[Any]]] = {}
     for p in points:
         groups.setdefault(_ident(p.winner), (p.winner, []))[1].append(p.setting)
@@ -326,25 +365,37 @@ def sweep(
     order_stable = len({tuple(map(_ident, p.ranking)) for p in points}) == 1
     winner = points[0].winner
 
-    def control_point(setting: Any) -> SweepPoint:
-        try:
-            c = _point(setting, evaluate)
-        except Exception as exc:  # noqa: BLE001 - a control the evaluate cannot handle proves nothing
-            return SweepPoint(setting, None, (), f"raised:{exc.__class__.__name__}", flipped=False)
-        return SweepPoint(c.setting, c.winner, c.ranking, c.verdict, flipped=not _same(c.winner, winner))
+    def finish(p: SweepPoint) -> SweepPoint:
+        if p.winner is None:
+            return p
+        return SweepPoint(p.setting, p.winner, p.ranking, p.verdict, flipped=not _same(p.winner, winner))
 
-    named_points = tuple(control_point(c) for c in named)
+    named_points = tuple(finish(raw[("n", i, 0)]) for i in range(len(named)))
     for c in named_points:
         if c.winner is None:
             raise ValueError(f"evaluate raised at the named negative control {c.setting!r}: {c.verdict}")
         if not c.flipped:
             return VacuousFinding(tuple(points), c)
-    hidden_points = tuple(control_point(c) for c in hidden_settings)
+    hidden_points = tuple(finish(raw[("h", i, 0)]) for i in range(len(hidden_settings)))
     if unprovable is None and not any(c.flipped for c in hidden_points):
         unprovable = (f"none of the {len(hidden_points)} hidden controls flipped it"
                       + (" even though the named control did (an evaluate that responds only at its known control is not proven)"
                          if named_points else ""))
     if unprovable is not None:
         return UnprovenFinding(tuple(points), unprovable, hidden_points, named_points, seed, order_stable)
+
+    # T2d caveat: if every hidden control that flipped lies OUTSIDE the swept
+    # range, the proof rests on out-of-range probes, which a range-aware
+    # adversary (honest inside the range, flipping outside) can distinguish.
+    # That is a structural limit of black-box probing; we name it, not hide it.
+    probing_limit: Optional[str] = None
+    numeric = all(_is_number(s) for s in settings)
+    if numeric:
+        lo, hi = min(settings), max(settings)
+        in_range_flip = any(c.flipped and _is_number(c.setting) and lo <= c.setting <= hi for c in hidden_points)
+        if not in_range_flip:
+            probing_limit = ("proof of responsiveness rests on out-of-range probes only; a range-aware evaluate "
+                             "(honest inside the swept range, flipping outside) is indistinguishable from a real "
+                             "responder by black-box probing - structural limit, see README")
     return StableFinding(winner, tuple(points), order_stable, named_points[0] if named_points else None,
-                         hidden_points, named_points, seed)
+                         hidden_points, named_points, seed, probing_limit)

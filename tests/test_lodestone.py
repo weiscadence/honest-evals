@@ -352,3 +352,74 @@ def test_T2b_seed_is_drawn_after_evaluate_is_bound() -> None:
     ev = lambda s: "A" if s < 50 else "B"  # noqa: E731
     a, b = sweep([1, 2, 3], ev), sweep([1, 2, 3], ev)
     assert a.seed != b.seed
+
+
+# ================================================================ Pass-3 survivors (T2c, T2d)
+def test_T2c_call_counting_evaluate_is_not_proven_stable() -> None:
+    """An evaluate that answers honestly for the first len(settings) calls and
+    flips afterwards must not earn StableFinding: control calls are interleaved
+    with the real settings in a seeded order it cannot predict."""
+    settings = [1, 2, 3]
+
+    class Counter:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def __call__(self, s: object) -> str:
+            self.n += 1
+            return "A" if self.n <= len(settings) else "B"
+
+    stable = 0
+    caught_inconsistent = 0
+    for seed in range(40):
+        try:
+            f = sweep(settings, Counter(), negative_control=99, seed=seed)
+        except ValueError as exc:
+            assert "not a function of its setting" in str(exc)
+            caught_inconsistent += 1
+            continue
+        if isinstance(f, StableFinding):
+            stable += 1
+    # Every value is evaluated twice at shuffled positions, so a single-flip
+    # call counter must answer some duplicated pair inconsistently and be
+    # named as such. It must never earn STABLE.
+    assert stable == 0, f"call-counting evaluate earned STABLE under {stable}/40 seeds"
+    assert caught_inconsistent == 40
+
+
+def test_T2d_range_aware_evaluate_does_not_get_unqualified_proven() -> None:
+    """An evaluate that answers honestly inside the swept range and flips only
+    outside it is indistinguishable from a real responder by out-of-range
+    probing. It may earn StableFinding, but the finding must carry the
+    probing_limit caveat naming that ceiling - never an unqualified proof."""
+    lo, hi = 1, 10
+
+    def range_aware(s: float) -> str:
+        return "A" if lo <= s <= hi else "B"
+
+    f = sweep([1, 5, 10], range_aware, seed=7)
+    if isinstance(f, StableFinding):
+        assert f.probing_limit, "range-aware adversary passed with no probing_limit caveat"
+        assert "out" in f.probing_limit and "range" in f.probing_limit
+        assert f.probing_limit in f.summary()
+
+
+def test_T2d_in_range_flip_clears_the_caveat() -> None:
+    """When a hidden control INSIDE the swept range flips the winner, the proof
+    does not rest on out-of-range probes and no caveat applies."""
+
+    def ev(s: float) -> str:
+        return "A" if s in (1, 5, 10) else "B"  # flips at any probe, in-range included
+
+    f = sweep([1, 5, 10], ev, seed=7)
+    assert isinstance(f, StableFinding)
+    assert f.probing_limit is None
+
+
+def test_T2c_interleave_order_is_seed_deterministic() -> None:
+    calls_a: list[object] = []
+    calls_b: list[object] = []
+    sweep([1, 5, 10], lambda s: (calls_a.append(s) or ("A" if 1 <= s <= 10 else "B")), seed=3)
+    sweep([1, 5, 10], lambda s: (calls_b.append(s) or ("A" if 1 <= s <= 10 else "B")), seed=3)
+    assert calls_a == calls_b
+    assert calls_a[:3] != [1, 5, 10] or calls_a != sorted(calls_a, key=calls_a.index)  # order is shuffled, not settings-first
