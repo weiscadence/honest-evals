@@ -180,6 +180,19 @@ therefore not proven. `finding.seed` replays the draw (`sweep(..., seed=)`).
 Winners are compared by type as well as value (`1` and `True` are different
 winners).
 
+Two adversaries reviewers raised, and what holds against them: a
+**call-counting** evaluate (answers by position, not by its setting) is caught
+because every value — settings and controls alike — is evaluated twice at two
+seeded-shuffled positions, and any single flip by position must split one of
+those pairs; the sweep then raises, naming the evaluate as not a function of
+its setting. A **range-aware** evaluate (honest inside the swept range,
+flipping only outside it) is a *structural limit of black-box probing*: it
+cannot be distinguished from a real responder by out-of-range probes. The
+sweep draws in-range probes too (midpoints between adjacent settings); when no
+in-range probe flipped, a `StableFinding` carries a `probing_limit` caveat in
+its summary instead of pretending the proof is unconditional. The honest
+answer past that line is reading the evaluate's source, not more probing.
+
 ## Honest limits
 
 - **The allowlist is not a sandbox.** It refuses anything it does not
