@@ -193,6 +193,17 @@ in-range probe flipped, a `StableFinding` carries a `probing_limit` caveat in
 its summary instead of pretending the proof is unconditional. The honest
 answer past that line is reading the evaluate's source, not more probing.
 
+Two limits the defenses do **not** cover (found by a reviewer's fourth pass,
+and pinned as tests rather than hidden): the duplicate check catches evaluates
+that ignore their setting outright, but **an invoker who controls the draw
+loop can re-roll seeds** until a position-based evaluate slips through
+(~0.5% of seeds here) — the library cannot police the party who calls it in a
+loop; publish the seed and the attempt count, or ledger the sweeps. And the
+sweep validates stability **across the settings you gave it**: an evaluate
+tuned to agree at exactly those points earns an uncaveated pass, because the
+sweep cannot know the settings were cherry-picked. The defense there is to
+pre-register the settings before the evaluate exists, not more probing.
+
 ## Honest limits
 
 - **The allowlist is not a sandbox.** It refuses anything it does not

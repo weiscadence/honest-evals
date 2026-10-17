@@ -423,3 +423,35 @@ def test_T2c_interleave_order_is_seed_deterministic() -> None:
     sweep([1, 5, 10], lambda s: (calls_b.append(s) or ("A" if 1 <= s <= 10 else "B")), seed=3)
     assert calls_a == calls_b
     assert calls_a[:3] != [1, 5, 10] or calls_a != sorted(calls_a, key=calls_a.index)  # order is shuffled, not settings-first
+
+
+# ================================================================ Pass-4 verdicts (documented limits, not defenses)
+def test_T2c_grind_documented_a_seed_rerolling_invoker_can_close() -> None:
+    """DOCUMENTED LIMIT (Lodestone Pass 4): an invoker who controls the draw
+    loop can re-roll seeds until a position-based evaluate survives the
+    duplicate check (~0.5% of seeds for a k-optimized counter here). The
+    library cannot stop the party who calls it in a loop; the README says so.
+    This test pins one such winning draw so the limit stays visible."""
+
+    class Counter:
+        def __init__(self, k: int) -> None:
+            self.k, self.n = k, 0
+
+        def __call__(self, s: object) -> str:
+            self.n += 1
+            return "A" if self.n <= self.k else "B"
+
+    f = sweep([1, 2, 3], Counter(4), negative_control=99, seed=63)
+    assert isinstance(f, StableFinding)  # the grind exists; do not pretend otherwise
+
+
+def test_T2d_gerrymandered_settings_are_out_of_scope_and_said_so() -> None:
+    """DOCUMENTED LIMIT (Lodestone Pass 4): an evaluate that answers 'A' at
+    exactly the swept settings and 'B' everywhere else earns an uncaveated
+    StableFinding - it genuinely responds to its setting, and the sweep cannot
+    know the settings were chosen to agree. The defense is pre-registering the
+    settings, not more probing. The README must say this."""
+    f = sweep([0.01, 0.05, 0.10], lambda s: "A" if s in (0.01, 0.05, 0.10) else "B", seed=5)
+    assert isinstance(f, StableFinding) and f.probing_limit is None
+    readme = open("README.md").read()
+    assert "pre-register" in readme.lower() and "draw loop" in readme.lower()
