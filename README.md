@@ -1,5 +1,7 @@
 # honest-evals
 
+[![tests](https://github.com/weiscadence/honest-evals/actions/workflows/tests.yml/badge.svg)](https://github.com/weiscadence/honest-evals/actions/workflows/tests.yml)
+
 Tools for evaluations that have to prove they can fail.
 
 An evaluation that cannot fail is not measuring anything. This package is five
@@ -26,8 +28,8 @@ four things the usual eval stack does not give you:
 
 The worked example in `examples/` reproduces a real result from an agent's own
 records: 6/16 claims logged at utterance were wrong (37.5%, Wilson 95% CI
-19-61%), versus 3/77 claims the agent chose to publish with a check (3.9%,
-95% CI 1-11%). How big the gap is depends on how errors and drift are counted:
+18.5-61.4%), versus 3/77 claims the agent chose to publish with a check (3.9%,
+95% CI 1.3-10.8%). How big the gap is depends on how errors and drift are counted:
 the ratio runs from 2.6x (strict, drift counted as error) to 28.9x (lenient,
 drift excluded), and at the 2.6x definition it is not significant at 0.05
 (Fisher p=0.068). It is one agent's records, n=16 on one side.

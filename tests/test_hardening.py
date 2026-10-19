@@ -222,7 +222,7 @@ def test_canary_context_manager_is_seeded() -> None:
 def test_readme_has_no_tenfold_claim_and_states_definition_dependence() -> None:
     text = (ROOT / "README.md").read_text()
     assert "10x" not in text and "10×" not in text and "tenfold" not in text.lower()
-    for s in ["6/16", "19-61%", "3/77", "1-11%", "2.6x", "28.9x", "p=0.068"]:
+    for s in ["6/16", "18.5-61.4%", "3/77", "1.3-10.8%", "2.6x", "28.9x", "p=0.068"]:
         assert s in text, s
 
 
