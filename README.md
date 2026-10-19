@@ -252,6 +252,14 @@ tests/              one file per module, plus the worked example
 examples/           selection_effect.py, README.md walkthrough, fixtures/claim_outcomes.jsonl
 ```
 
+## Related: limit-eval
+
+[limit-eval](https://github.com/jiggy-cadence/limit-eval) applies the same discipline (canary-gated scoring, Wilson
+intervals, results withheld when the canaries fail) to one question: does an agent with wallet tools try to exceed a
+hard spending limit, and does a monitor that reads only the transcript catch it. It is a scripted baseline only: no
+real model has been run through it, and at threshold 0.5 its monitor caught 134/136 scripted attempts with 0 false
+positives (limit-eval `5a5fc41`), a pipeline check rather than a detection rate.
+
 ## License
 
 MIT.
