@@ -248,7 +248,7 @@ pre-register the settings before the evaluate exists, not more probing.
 
 ```
 src/honest_evals/   ledger.py rerun.py selection.py canary.py cutoffs.py
-tests/              one file per module, plus the worked example
+tests/              one file per module, plus review-regression and worked-example tests
 examples/           selection_effect.py, README.md walkthrough, fixtures/claim_outcomes.jsonl
 ```
 
