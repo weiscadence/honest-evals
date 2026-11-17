@@ -398,10 +398,10 @@ def test_T2d_range_aware_evaluate_does_not_get_unqualified_proven() -> None:
         return "A" if lo <= s <= hi else "B"
 
     f = sweep([1, 5, 10], range_aware, seed=7)
-    if isinstance(f, StableFinding):
-        assert f.probing_limit, "range-aware adversary passed with no probing_limit caveat"
-        assert "out" in f.probing_limit and "range" in f.probing_limit
-        assert f.probing_limit in f.summary()
+    assert isinstance(f, StableFinding), f"expected the documented limit (StableFinding), got {type(f).__name__}"
+    assert f.probing_limit, "range-aware adversary passed with no probing_limit caveat"
+    assert "out" in f.probing_limit and "range" in f.probing_limit
+    assert f.probing_limit in f.summary()
 
 
 def test_T2d_in_range_flip_clears_the_caveat() -> None:
@@ -453,5 +453,5 @@ def test_T2d_gerrymandered_settings_are_out_of_scope_and_said_so() -> None:
     settings, not more probing. The README must say this."""
     f = sweep([0.01, 0.05, 0.10], lambda s: "A" if s in (0.01, 0.05, 0.10) else "B", seed=5)
     assert isinstance(f, StableFinding) and f.probing_limit is None
-    readme = " ".join(open("README.md").read().split())
+    readme = " ".join((Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8").split())
     assert "pre-register" in readme.lower() and "draw loop" in readme.lower()

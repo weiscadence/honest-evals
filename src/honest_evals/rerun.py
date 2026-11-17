@@ -62,8 +62,10 @@ class RerunClass(str, Enum):
 
 
 # Allowlist: a command may run only if every pipeline stage is one of these
-# read-only programs, with only the arguments allowed below. Everything else is
-# refused with a named reason. This is still not a sandbox: an allowed command is
+# programs, and none of its arguments is a known write/exec/follow option
+# (below). The programs are read-only in their ordinary use; the option deny
+# table is a list of the write forms we know of, not a proof that none remain.
+# Everything else is refused with a named reason. This is still not a sandbox: an allowed command is
 # run with a timeout under `nice`, and the caller chooses cwd.
 ALLOWLIST: frozenset[str] = frozenset(
     {
@@ -73,7 +75,10 @@ ALLOWLIST: frozenset[str] = frozenset(
         "comm", "nl", "file", "du", "df", "pwd", "seq", "git",
     }
 )
-# Per-command argument prefixes that write files or run other programs.
+# Per-command options that write files, run other programs, or never return.
+# Matched by _denied_option: a short flag is refused anywhere in a bundle
+# (`sort -uo out` is `-u -o out`), a long option under any abbreviation GNU
+# getopt accepts (`sort --o=out` is `--output=out`).
 _ARG_DENY: dict[str, tuple[str, ...]] = {
     "sort": ("-o", "--output", "--compress-program"),
     "date": ("-s", "--set"),
@@ -98,6 +103,58 @@ def _tokens(cmd: str) -> list[str]:
     return list(lex)
 
 
+def _denied_option(arg: str, deny: tuple[str, ...], *, bundles: bool = True) -> bool:
+    """True if ``arg`` is, contains, or abbreviates one of the ``deny`` options.
+
+    Deliberately over-refuses: any short-flag bundle containing a denied letter
+    is refused even where the letter is really another flag's value
+    (``sort -to`` is ``-t`` with separator ``o``). A refusal is named and
+    costs a re-run; a miss writes a file.
+    """
+    if not arg.startswith("-") or arg == "-":
+        return False
+    if arg.startswith("--"):
+        name = arg.split("=", 1)[0]
+        if name == "--":
+            return False
+        return any(d.startswith("--") and (name.startswith(d) or d.startswith(name)) for d in deny)
+    for d in deny:
+        if d.startswith("--"):
+            continue
+        if arg.startswith(d) or (bundles and len(d) == 2 and d[1] in arg[1:]):
+            return True
+    return False
+
+
+def _strip_stderr_merge(cmd: str) -> str:
+    """Drop a whitespace-delimited ``2>&1`` that sits outside quotes.
+
+    Inside quotes it is data, not a redirect, and is left alone (where its
+    ``>`` and ``&`` are then refused as metacharacters like any other).
+    """
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c
+        elif (
+            cmd.startswith("2>&1", i)
+            and (i == 0 or cmd[i - 1].isspace())
+            and (i + 4 == len(cmd) or cmd[i + 4].isspace())
+        ):
+            out.append(" ")
+            i += 4
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _check_stage(argv: list[str]) -> Optional[str]:
     prog = argv[0]
     if "/" in prog or "=" in prog:
@@ -106,7 +163,7 @@ def _check_stage(argv: list[str]) -> Optional[str]:
         return f"not_allowlisted:{prog}"
     args = argv[1:]
     for a in args:
-        if a.startswith(_ARG_DENY.get(prog, ())):
+        if _denied_option(a, _ARG_DENY.get(prog, ())):
             return f"not_allowlisted:{prog}_{a.split('=', 1)[0]}"
     if prog == "git":
         if not args or args[0].startswith("-"):
@@ -115,7 +172,8 @@ def _check_stage(argv: list[str]) -> Optional[str]:
         if sub not in _GIT_READ:
             return f"not_allowlisted:git_{sub}"
         for a in rest:
-            if a.startswith(_GIT_ARG_DENY):
+            # no bundle matching here: git's -S/-G take free text as their value
+            if _denied_option(a, _GIT_ARG_DENY, bundles=False):
                 return f"not_allowlisted:git_{sub}_{a.split('=', 1)[0]}"
         if sub in _GIT_LIST_FLAGS and any(a not in _GIT_LIST_FLAGS[sub] for a in rest):
             return f"not_allowlisted:git_{sub}_write_form"
@@ -129,7 +187,7 @@ def refusal_reason(cmd: str) -> Optional[str]:
     chain of allowlisted read-only programs. Any shell metacharacter that can
     substitute, expand, redirect, group or sequence (``$ ` \\ ; < > ( ) { } ~``,
     newlines, a lone ``&``) is refused anywhere in the string, even inside
-    quotes. The only redirect accepted is a literal ``2>&1``. Shell builtins
+    quotes. The only redirect accepted is a literal ``2>&1`` outside quotes. Shell builtins
     that run other code (``eval``, ``exec``, ``source``, ``command``, ...) and
     interpreters (``python3 -c``, ...) are simply not on the allowlist.
     """
@@ -137,7 +195,7 @@ def refusal_reason(cmd: str) -> Optional[str]:
         return "no_command_recorded"
     if _NETWORK_HINT.search(cmd):
         return "refused:network"
-    stripped = re.sub(r"(?<!\S)2>&1(?!\S)", " ", cmd)
+    stripped = _strip_stderr_merge(cmd)
     bad = sorted({c for c in stripped if c in _METACHARS})
     if bad:
         return "refused:shell_metachar:" + "".join(repr(c)[1:-1] for c in bad)

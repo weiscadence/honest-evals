@@ -327,9 +327,11 @@ def sweep(
     # T2c defense: settings, named controls and hidden controls are evaluated in
     # ONE seeded shuffled pass, and EVERY value is evaluated twice at two
     # different shuffled positions. A call-counting evaluate (one that answers
-    # by position, not by its setting) must answer some duplicated pair
-    # inconsistently: any flip after call k splits the pair of at least one
-    # value whose first copy landed at or before k. Inconsistency is itself the
+    # by position, not by its setting) answers a duplicated pair inconsistently
+    # whenever its flip lands between the two copies of some value. That is
+    # likely, not certain: a flip at call k is missed when every pair lies
+    # wholly on one side of k under this seed's shuffle, so this is a
+    # probabilistic check. When a pair is split, inconsistency is itself the
     # verdict - the evaluate is not a function of its setting.
     entries: list[tuple[str, int, int, Any]] = [
         (kind, i, copy, v)
