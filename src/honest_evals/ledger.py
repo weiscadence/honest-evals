@@ -338,7 +338,19 @@ def verify_chain(
         if raise_on_fail:
             raise ChainError(rep.reason) from exc
         return rep
-    head = led.read_head()
+    try:
+        head = led.read_head()
+    except (OSError, ValueError) as exc:
+        # A head file that is not JSON is a failed check, not a crash.
+        rep = ChainReport(False, len(rows), rows[-1].hash if rows else "", f"unreadable head file: {exc}")
+        if raise_on_fail:
+            raise ChainError(rep.reason) from exc
+        return rep
+    if head is not None and not isinstance(head, dict):
+        rep = ChainReport(False, len(rows), rows[-1].hash if rows else "", "unreadable head file: not a JSON object")
+        if raise_on_fail:
+            raise ChainError(rep.reason)
+        return rep
 
     def fail(reason: str, at: Optional[int]) -> ChainReport:
         rep = ChainReport(False, len(rows), rows[-1].hash if rows else "", reason, at)

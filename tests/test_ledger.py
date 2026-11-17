@@ -97,3 +97,13 @@ def test_raise_on_fail(tmp_path: Path) -> None:
     led.head_path.unlink()
     with pytest.raises(ChainError):
         verify_chain(led, raise_on_fail=True)
+
+
+def test_corrupt_head_file_is_a_failed_report_not_a_crash(tmp_path: Path) -> None:
+    led = _three(tmp_path)
+    for junk in ("{not json", "[1, 2]"):
+        led.head_path.write_text(junk, encoding="utf-8")
+        rep = verify_chain(led)
+        assert not rep.ok and rep.rows == 3 and "head" in rep.reason
+        with pytest.raises(ChainError):
+            verify_chain(led, raise_on_fail=True)

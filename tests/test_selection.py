@@ -96,3 +96,26 @@ def test_outcomes_from_records_normalises_classes() -> None:
     out = outcomes_from_records(rows)
     assert [o.checked for o in out] == [True, True, True, False]
     assert out[1].drift and out[2].strict and not out[2].lenient
+
+
+def test_summary_names_the_confidence_level_actually_used() -> None:
+    cell = rate_cell(_pop(40, 10), confidence=0.90, n_boot=200)
+    assert cell.confidence == 0.90
+    assert "Wilson 90%" in cell.summary() and "95%" not in cell.summary()
+    assert "Wilson 95%" in rate_cell(_pop(40, 10), n_boot=200).summary()
+
+
+def test_ratio_is_nan_not_inf_when_neither_group_has_errors() -> None:
+    assert math.isnan(two_proportion_test(0, 20, 0, 30).ratio)
+    assert math.isinf(two_proportion_test(3, 20, 0, 30).ratio)
+    assert two_proportion_test(4, 20, 2, 20).ratio == pytest.approx(2.0)
+
+
+def test_winner_is_not_named_when_a_rate_is_undefined() -> None:
+    """A population with no checked rows has a nan rate; nan compares False
+    both ways, which used to fall through and name the other population."""
+    eff = selection_effect(_pop(0, 0, n_unres=5), _pop(20, 4), n_boot=200)
+    assert eff.winner() == "insufficient_data"
+    eff = selection_effect(_pop(20, 4), _pop(0, 0, n_unres=5), n_boot=200)
+    assert eff.winner() == "insufficient_data"
+    assert selection_effect(_pop(20, 8), _pop(20, 4), n_boot=200).winner() == "logged_at_claim"

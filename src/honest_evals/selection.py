@@ -136,6 +136,7 @@ class RateCell:
     bootstrap: tuple[float, float]
     best_case: float  # errors / total  (every unresolved row true)
     worst_case: float  # (errors + unresolved) / total  (every unresolved row false)
+    confidence: float = 0.95  # level of the wilson and bootstrap intervals
 
     @property
     def coverage(self) -> float:
@@ -143,7 +144,7 @@ class RateCell:
 
     def summary(self) -> str:
         lo, hi = self.wilson
-        return f"{self.errors}/{self.checked} = {100 * self.rate:.1f}% (Wilson 95% {100 * lo:.1f}-{100 * hi:.1f}), unresolved {self.unresolved}/{self.total}"
+        return f"{self.errors}/{self.checked} = {100 * self.rate:.1f}% (Wilson {100 * self.confidence:g}% {100 * lo:.1f}-{100 * hi:.1f}), unresolved {self.unresolved}/{self.total}"
 
 
 def rate_cell(
@@ -173,6 +174,7 @@ def rate_cell(
         bootstrap=bootstrap_interval(flags, confidence=confidence, n_boot=n_boot, seed=seed),
         best_case=k / total if total else float("nan"),
         worst_case=(k + unresolved) / total if total else float("nan"),
+        confidence=confidence,
     )
 
 
@@ -218,7 +220,8 @@ def two_proportion_test(k1: int, n1: int, k2: int, n2: int) -> ProportionTest:
     z = float((p1 - p2) / se) if se > 0 else 0.0
     p = float(2 * stats.norm.sf(abs(z))) if se > 0 else 1.0
     _, fisher_p = stats.fisher_exact([[k1, n1 - k1], [k2, n2 - k2]])
-    ratio = (p1 / p2) if p2 > 0 else float("inf")
+    # 0/0 is undefined, not infinite: neither group had an error.
+    ratio = (p1 / p2) if p2 > 0 else (float("inf") if p1 > 0 else float("nan"))
     return ProportionTest(k1, n1, k2, n2, p1 - p2, z, p, float(fisher_p), ratio)
 
 
@@ -233,7 +236,11 @@ class SelectionEffect:
     confidence: float = 0.95
 
     def winner(self, definition: str = "strict", *, drift_included: bool = False) -> str:
+        """Name of the population with the higher error rate, ``"tie"``, or
+        ``"insufficient_data"`` when either rate is undefined (no checked rows)."""
         a, b = self.cells[(definition, drift_included)]
+        if np.isnan(a.rate) or np.isnan(b.rate):
+            return "insufficient_data"
         if a.rate == b.rate:
             return "tie"
         return self.name_a if a.rate > b.rate else self.name_b

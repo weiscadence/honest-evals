@@ -233,3 +233,52 @@ def test_example_runs_canary_and_sweep_before_any_headline() -> None:
     gate = max(out.index("canary PASS"), out.rindex("cutoff sweep"))
     for headline in ["selection effect:", "MATCH", "ratio", "HEADLINE"]:
         assert out.index(headline) > gate, headline
+
+
+# ------------------------------------------- panel 2026-11-17: allowlist forms
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "sort -uo out.txt in.txt",  # -o bundled behind another short flag
+        "sort -ro out.txt in.txt",
+        "sort --out=out.txt in.txt",  # GNU long-option abbreviations
+        "sort --o=out.txt in.txt",
+        "sort --output out.txt in.txt",
+        "sort --compress-prog=sh in.txt",
+        "date -us 2020-01-01",
+        "date --se=2020-01-01",
+        "tail -5f log.txt",
+        "tail --fol log.txt",
+        "git diff --outp=x",
+        "git log --ext-d",
+    ],
+)
+def test_bundled_and_abbreviated_write_options_are_refused(cmd: str) -> None:
+    assert refusal_reason(cmd) is not None, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["sort -u in.txt", "sort -rn in.txt", "sort --reverse in.txt", "date -u", "tail -5 log.txt",
+     "tail -n 5 log.txt", "git log --oneline -3", "git log -S fo", "git diff --stat", "echo ok 2>&1"],
+)
+def test_ordinary_read_forms_still_allowed(cmd: str) -> None:
+    assert refusal_reason(cmd) is None, cmd
+
+
+def test_quoted_stderr_merge_is_data_not_a_redirect() -> None:
+    """A quoted `2>&1` used to be deleted from the argument before the run, so
+    the recorded command and the executed one differed. It is now left in
+    place, where its metacharacters are refused like any other."""
+    assert refusal_reason('echo "a 2>&1 b"') is not None
+    assert refusal_reason("echo 'a 2>&1 b'") is not None
+    assert refusal_reason("echo a 2>&1") is None
+
+
+def test_sort_output_bundle_does_not_write(tmp_path: Path) -> None:
+    src = tmp_path / "in.txt"
+    src.write_text("b\na\n")
+    out = tmp_path / "out.txt"
+    res = rerun({"seq": 1, "check": f"sort -uo {out} {src}", "observed": "a\nb"})
+    assert res.cls is RerunClass.NOT_RERUNNABLE
+    assert not out.exists()
