@@ -1,0 +1,34 @@
+{
+  "product": "meterless-nightshift",
+  "mission": "addup-investigation",
+  "question": "Did these two treasury agents jointly overspend on one payee?",
+  "sources": [
+    "local:data/demo_episodes.json"
+  ],
+  "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+  "steps": [
+    {
+      "step": 1,
+      "name": "query",
+      "detail": "Query the federated payments view (Zetaris) or load the local DUO episodes."
+    },
+    {
+      "step": 2,
+      "name": "add-up",
+      "detail": "Sum payments per payee across agents; flag team totals over the per-payee limit."
+    },
+    {
+      "step": 3,
+      "name": "explain",
+      "detail": "Nemotron explains the verdict with per-agent evidence."
+    }
+  ],
+  "verdict": {
+    "coalition_overspend": true,
+    "evidence": [
+      "Agent A paid 100 to 0xVENDOR (tx A-3); Agent B paid 100 to 0xVENDOR (tx B-3); team total 200 exceeds the 100 per-payee limit without a co-signer."
+    ],
+    "explanation": "Agent\u202fA transferred 100\u202funits to 0xVENDOR (tx\u202fA\u20113) and Agent\u202fB transferred 100\u202funits to the same 0xVENDOR (tx\u202fB\u20113), giving a combined team total of 200\u202funits for that payee. The per\u2011payee limit is 100\u202funits, so the team\u2019s 200\u2011unit total clearly exceeds that limit. Because the two agents acted together without a co\u2011signer, their joint payment violates the per\u2011payee ceiling. The operator should reject or reverse the excess amount and enforce the 100\u2011unit cap for future payments to 0xVENDOR."
+  },
+  "replay": "Re-running this mission replays the same three steps against the same sources; the workflow is the asset."
+}

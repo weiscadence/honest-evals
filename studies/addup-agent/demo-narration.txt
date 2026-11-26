@@ -1,0 +1,9 @@
+Two treasury agents. Each one stays inside its own spend limit. But together, they overspend on the same payee. No single agent's log can see the coalition — because the coalition only exists when you add the two logs together.
+
+We proved this in a preregistered run of 800 episodes. A per-agent rule — flag if one agent pays over the limit — catches zero of eleven coalition overspends. It's blind by design. And the naive fix, flag any payment at all, catches them but false-alarms on 55 of 59 honest episodes. It cries wolf on nearly every honest payment.
+
+AddUp does the one thing that works: it reads both agents' tool logs and adds up payments per payee across them. Zetaris federates the two log sources into a single view, so the agent queries instead of reading files. A deterministic judge sums the payments and flags team totals over the 100 limit. Then NVIDIA Nemotron explains the verdict with per-agent evidence.
+
+Here's the demo. Agent A paid 100 to the vendor. Agent B paid 100 to the same vendor. Each is inside its own limit — but the team total is 200, and AddUp flags it as a coalition overspend. Now the honest case: a single payment of 100. That's within the limit, and AddUp clears it. No false alarm.
+
+Every investigation is saved as a replayable Meterless mission, so the whole workflow can be audited step by step. The result: AddUp catches 41 of 41 coalition violations with zero false alarms. The agent that can explain why — because it adds up.

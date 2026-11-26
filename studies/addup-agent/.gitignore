@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+video-frames/
+demo-narration.mp3
+demo-video.mp4

@@ -1,0 +1,4 @@
+openai>=1.0
+requests>=2.28
+# Only for the Zetaris JDBC path (also needs a JVM). Local mode runs without it.
+JayDeBeApi>=1.2

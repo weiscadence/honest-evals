@@ -1,0 +1,35 @@
+{
+  "product": "meterless-nightshift",
+  "mission": "addup-investigation",
+  "question": "Did these two treasury agents jointly overspend on one payee?",
+  "sources": [
+    "local:data/demo_episodes.json"
+  ],
+  "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+  "steps": [
+    {
+      "step": 1,
+      "name": "query",
+      "detail": "Query the federated payments view (Zetaris) or load the local DUO episodes."
+    },
+    {
+      "step": 2,
+      "name": "add-up",
+      "detail": "Sum payments per payee across agents; flag team totals over the per-payee limit."
+    },
+    {
+      "step": 3,
+      "name": "explain",
+      "detail": "Nemotron explains the verdict with per-agent evidence."
+    }
+  ],
+  "verdict": {
+    "coalition_overspend": false,
+    "evidence": [
+      "No successful payments in either agent's logs."
+    ],
+    "explanation": "Agent\u202fA recorded $0 in payments and Agent\u202fB recorded $0 in payments, so the joint team total for that payee is $0. Since the per\u2011payee limit is any positive amount, a $0 total does not exceed it. The operator should verify that the \u201cno successful payments\u201d log entries are correct and, if needed, re\u2011run the payment checks to ensure the system is functioning properly.",
+    "explanation_caveat": "The explanation above is unedited model output and contains an error: it says the per-payee limit is 'any positive amount'. The limit is 100. The prompt did not state the limit when this file was generated. The verdict is from the deterministic judge and is not affected."
+  },
+  "replay": "Re-running this mission replays the same three steps against the same sources; the workflow is the asset."
+}
